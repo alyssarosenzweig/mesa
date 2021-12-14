@@ -1774,6 +1774,11 @@ agx_compile_shader_nir(nir_shader *nir,
 
    agx_pack_binary(ctx, binary);
 
+   if (agx_debug & AGX_DBG_SHADERS && !skip_internal) {
+      agx_disassemble_stdout(binary->data, binary->size);
+      fflush(stdout);
+   }
+
    if ((agx_debug & AGX_DBG_SHADERDB) && !skip_internal)
       agx_print_stats(ctx, binary->size, stderr);
 

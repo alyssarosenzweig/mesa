@@ -196,6 +196,16 @@ agx_compile_shader_nir(nir_shader *nir,
       struct util_dynarray *binary,
       struct agx_shader_info *out);
 
+static inline void
+agx_disassemble_stdout(void *data, size_t size)
+{
+   FILE *tmp = fopen("/tmp/shader.bin", "wb");
+   fwrite(data, 1, size, tmp);
+   fclose(tmp);
+
+   system("python3 ~/applegpu/disassemble.py /tmp/shader.bin");
+}
+
 static const nir_shader_compiler_options agx_nir_options = {
    .lower_fdiv = true,
    .fuse_ffma16 = true,
