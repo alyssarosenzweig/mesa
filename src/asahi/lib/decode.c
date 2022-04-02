@@ -41,7 +41,26 @@ static const char *agx_alloc_types[AGX_NUM_ALLOC] = { "mem", "map", "cmd" };
 static void
 agx_disassemble(void *_code, size_t maxlen, FILE *fp)
 {
-   /* stub */
+   FILE *tmp = fopen("/tmp/shader.bin", "wb");
+   fwrite(_code, 1, maxlen, tmp);
+   fclose(tmp);
+
+   system("python3 ~/applegpu/disassemble.py /tmp/shader.bin > /tmp/shader.asm");
+
+   tmp = fopen("/tmp/shader.asm", "r");
+
+   fseek(tmp, 0, SEEK_END);
+   unsigned filesize = ftell(tmp);
+   rewind(tmp);
+
+   char *code = malloc(filesize);
+   unsigned res = fread(code, 1, filesize, tmp);
+   if (res != filesize) {
+      printf("Couldn't read full file\n");
+   }
+   fclose(tmp);
+   fwrite(code, 1, filesize, fp);
+   free(code);
 }
 
 FILE *agxdecode_dump_stream;
