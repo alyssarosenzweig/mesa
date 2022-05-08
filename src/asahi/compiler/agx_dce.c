@@ -23,7 +23,14 @@
 
 #include "agx_compiler.h"
 
-/* SSA-based scalar dead code elimination */
+/*
+ * SSA-based scalar dead code elimination.
+ *
+ * Unused instructions are eliminated if possible. Unused destinations of
+ * instructions that cannot be eliminated are rewritten to null. After running
+ * DCE, all (non-null) destinations have at least one use. This assumption
+ * simplifies the register allocator.
+ */
 
 void
 agx_dce(agx_context *ctx)
@@ -42,18 +49,24 @@ agx_dce(agx_context *ctx)
       }
 
       agx_foreach_instr_global_safe_rev(ctx, I) {
-         if (!agx_opcodes_info[I->op].can_eliminate) continue;
-
          bool needed = false;
 
          agx_foreach_dest(I, d) {
-            if (I->dest[d].type == AGX_INDEX_NORMAL)
-               needed |= BITSET_TEST(seen, I->dest[d].value);
-            else if (I->dest[d].type != AGX_INDEX_NULL)
+            if (I->dest[d].type == AGX_INDEX_NORMAL) {
+               bool dest_seen = BITSET_TEST(seen, I->dest[d].value);
+
+               if (!dest_seen) {
+                  I->dest[d] = agx_null();
+                  progress = true;
+               } else {
+                  needed = true;
+               }
+            } else if (I->dest[d].type != AGX_INDEX_NULL) {
                needed = true;
+            }
          }
 
-         if (!needed) {
+         if (!needed && agx_opcodes_info[I->op].can_eliminate) {
             agx_remove_instruction(I);
             progress = true;
          }
