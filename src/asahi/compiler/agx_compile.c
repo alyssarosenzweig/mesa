@@ -1480,6 +1480,8 @@ agx_optimize_nir(nir_shader *nir)
       NIR_PASS(progress, nir, nir_opt_loop_unroll);
    } while (progress);
 
+   NIR_PASS_V(nir, nir_opt_algebraic_distribute_src_mods);
+
    NIR_PASS_V(nir, nir_opt_algebraic_late);
    NIR_PASS_V(nir, nir_opt_constant_folding);
    NIR_PASS_V(nir, nir_copy_prop);
