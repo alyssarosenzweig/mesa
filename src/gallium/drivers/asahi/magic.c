@@ -198,20 +198,26 @@ demo_cmdbuf(uint64_t *buf, size_t size,
             util_format_description(zsbuf->texture->format);
 
          // note: setting 0x4 bit here breaks partial render with depth 
-         cfg.depth_flags = 0x80000; // no compression, clear
+         // known values of depth_flags:
+         // 0x80000 -- z32f tiled
+         // 0x40000 -- s8 tiled
+         //cfg.depth_flags = 0x80000; // no compression, clear
 
          cfg.depth_width = framebuffer->width;
          cfg.depth_height = framebuffer->height;
 
          if (util_format_has_depth(desc)) {
             depth_buffer = agx_map_surface(zsbuf);
+            cfg.depth_flags |= 0x80000; 
          } else {
             stencil_buffer = agx_map_surface(zsbuf);
+            cfg.depth_flags |= 0x40000; 
          }
 
          if (agx_resource(zsbuf->texture)->separate_stencil) {
             stencil_buffer = agx_map_surface_resource(zsbuf,
                   agx_resource(zsbuf->texture)->separate_stencil);
+            cfg.depth_flags |= 0x40000; 
          }
 
          cfg.stencil_buffer = stencil_buffer;
