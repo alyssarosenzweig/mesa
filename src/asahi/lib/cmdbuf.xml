@@ -242,8 +242,10 @@
     <value name="Transparent black" value="0"/>
     <value name="Opaque black" value="1"/>
     <value name="Opaque white" value="2"/>
+    <value name="Custom" value="3"/>
   </enum>
 
+  <!-- Followed by border colour! -->
   <struct name="Sampler" size="8">
     <field name="Minimum LOD" size="10" start="0" type="lod" default="0.0"/>
     <field name="Maximum LOD" size="10" start="10" type="lod" default="INFINITY"/>
@@ -390,24 +392,24 @@
     <field name="Start (halfs)" size="8" start="0:8" type="uint"/>
     <field name="Unk" size="4" start="0:16" type="hex" default="0x0"/>
     <!-- Exact split is unknown. -->
-    <field name="Size (halfs)" size="8" start="0:20" type="uint"/>
-    <field name="Buffer" size="36" start="0:28" type="address" modifier="shr(4)"/>
+    <field name="Size (halfs)" size="6" start="0:20" type="uint"/>
+    <field name="Buffer" size="38" start="0:26" type="address" modifier="shr(2)"/>
   </struct>
 
   <struct name="Bind texture" size="8">
     <field name="Tag" size="8" start="0:0" type="hex" default="0xdd"/>
     <field name="Start" size="8" start="0:8" type="uint"/>
     <!-- Exact split is unknown. Count is at least 5 bits. -->
-    <field name="Count" size="8" start="0:20" type="uint"/>
-    <field name="Buffer" size="36" start="0:28" type="address" modifier="shr(4)"/>
+    <field name="Count" size="6" start="0:20" type="uint"/>
+    <field name="Buffer" size="38" start="0:26" type="address" modifier="shr(2)"/>
   </struct>
 
   <struct name="Bind sampler" size="8">
     <field name="Tag" size="8" start="0:0" type="hex" default="0x9d"/>
     <field name="Start" size="8" start="0:8" type="uint"/>
-    <field name="Count" size="8" start="0:20" type="uint"/>
-    <!-- Exact split is unknown. -->
-    <field name="Buffer" size="36" start="0:28" type="address" modifier="shr(4)"/>
+    <field name="Count" size="6" start="0:20" type="uint"/>
+    <!-- Exact split is unknown. At most 7 bits -->
+    <field name="Buffer" size="38" start="0:26" type="address" modifier="shr(2)"/>
   </struct>
 
   <enum name="Preshader mode">
