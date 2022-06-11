@@ -319,6 +319,7 @@ TEST(timespec_test, timespec_eq)
    EXPECT_FALSE(timespec_eq(&b, &a));
 }
 
+#if 0
 TEST(timespec_test, timespec_get)
 {
    struct timespec a;
@@ -331,3 +332,4 @@ TEST(timespec_test, timespec_get)
    EXPECT_LE(a.tv_sec, t + 1);
    EXPECT_LE(t - 1, b.tv_sec);
 }
+#endif
