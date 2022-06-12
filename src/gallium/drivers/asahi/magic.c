@@ -167,9 +167,13 @@ demo_cmdbuf(uint64_t *buf, size_t size,
             uint32_t pipeline_load,
             uint32_t pipeline_store,
             bool clear_pipeline_textures,
+            unsigned clear_buffers,
             double clear_depth,
             unsigned clear_stencil)
 {
+   bool should_clear_depth = clear_buffers & PIPE_CLEAR_DEPTH;
+   bool should_clear_stencil = clear_buffers & PIPE_CLEAR_STENCIL;
+
    uint32_t *map = (uint32_t *) buf;
    memset(map, 0, 518 * 4);
 
@@ -208,23 +212,26 @@ demo_cmdbuf(uint64_t *buf, size_t size,
 
          if (util_format_has_depth(desc)) {
             depth_buffer = agx_map_surface(zsbuf);
-            cfg.depth_flags |= 0x80000; 
+            if (should_clear_depth) cfg.depth_flags |= 0x80000; 
          } else {
             stencil_buffer = agx_map_surface(zsbuf);
-            cfg.depth_flags |= 0x40000; 
+            if (should_clear_stencil) cfg.depth_flags |= 0x40000; 
          }
 
          if (agx_resource(zsbuf->texture)->separate_stencil) {
             stencil_buffer = agx_map_surface_resource(zsbuf,
                   agx_resource(zsbuf->texture)->separate_stencil);
-            cfg.depth_flags |= 0x40000; 
+            if (should_clear_stencil) cfg.depth_flags |= 0x40000; 
          }
 
-         cfg.stencil_buffer = stencil_buffer;
-         cfg.stencil_buffer_2 = stencil_buffer;
+         if (should_clear_depth)
+            cfg.depth_buffer_if_clearing = depth_buffer;
+
+         if (should_clear_stencil)
+            cfg.stencil_buffer = stencil_buffer;
 
          cfg.depth_buffer = depth_buffer;
-         cfg.depth_buffer_if_clearing = depth_buffer;
+         cfg.stencil_buffer_2 = stencil_buffer;
       }
    }
 
@@ -237,6 +244,12 @@ demo_cmdbuf(uint64_t *buf, size_t size,
    agx_pack(map + 292, IOGPU_CLEAR_Z_S, cfg) {
       cfg.set_when_reloading_z_1 = clear_pipeline_textures;
 
+      if (depth_buffer && !should_clear_depth)
+         cfg.set_when_reloading_z_1 = true;
+
+      if (stencil_buffer && !should_clear_stencil)
+         cfg.set_when_reloading_z_1 = true;
+
       cfg.depth_clear_value = fui(clear_depth);
       cfg.stencil_clear_value = clear_stencil;
 
@@ -248,8 +261,12 @@ demo_cmdbuf(uint64_t *buf, size_t size,
    }
 
    agx_pack(map + 356, IOGPU_MISC, cfg) {
-      cfg.depth_buffer = depth_buffer;
-      cfg.stencil_buffer = stencil_buffer;
+      if (should_clear_depth)
+         cfg.depth_buffer = depth_buffer;
+
+      if (should_clear_stencil)
+         cfg.stencil_buffer = stencil_buffer;
+
       cfg.encoder_id = encoder_id;
       cfg.unknown_buffer = demo_unk6(pool);
       cfg.width = framebuffer->width;
