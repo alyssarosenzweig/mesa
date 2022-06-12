@@ -602,6 +602,12 @@ agxdecode_dump_mappings(unsigned map_handle)
               agx_alloc_types[mmap_array[i].type],
               mmap_array[i].ptr.gpu, mmap_array[i].handle);
 
+      char *fn = NULL;
+      asprintf(&fn, "dump_%" PRIx64 ".bin", mmap_array[i].ptr.gpu);
+      FILE *fp = fopen(fn, "wb");
+      fwrite(mmap_array[i].ptr.cpu, 1, mmap_array[i].size, fp);
+      fclose(fp);
+
       hexdump(agxdecode_dump_stream, mmap_array[i].ptr.cpu, mmap_array[i].size, false);
       fprintf(agxdecode_dump_stream, "\n");
    }
