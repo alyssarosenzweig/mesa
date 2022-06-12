@@ -327,8 +327,31 @@
     <field name="Visibility mode" size="2" start="1:14" type="Visibility Mode"/>
     <field name="Scissor enable" size="1" start="1:16" type="bool"/>
     <field name="Depth bias enable" size="1" start="1:17" type="bool"/>
-    <field name="Unk ZS" size="1" start="1:18" type="hex" default="0x1"/>
-    <field name="Unk 2" size="2" start="1:19" type="hex" default="0x0"/>
+    <!-- ZSDs:
+      So far identical to stencil test enable 2, except also set when no ZS
+      state is bound in Metal? which really should be identical to a trivial
+      descriptor.
+    -->
+    <field name="Stencil test enable 1" size="1" start="1:18" type="bool"/>
+    <!-- ZSDs:
+      0: trivial
+      0: depth write enabled
+      0: depth greater
+      0: setDepthStencilState never called
+      0: front and back zs pass replace, readMask 0x0, writeMask 0x0 (+depths)
+      0: front and back zs pass replace, writeMask 0x0 (+depths)
+      0: front and back always (+depths)
+      1: front zs pass replace
+      1: front zs pass replace (+ depths)
+      1: back zs pass replace (+depths)
+      1: front and back zs pass replace (+depths)
+      1: front and back zs pass replace, readMask 0x0 (+depths)
+      1: front and back zs pass replace, writeMask 0x4 (+depths)
+      1: front and back greater (+depths)
+      1: front and back less, writeMask 0x0 (+depths)
+      1: front and back never (+depths)
+    -->
+    <field name="Stencil test enable 2" size="1" start="1:19" type="bool"/>
     <field name="Unk fill lines" size="1" start="1:26" type="hex" default="0x0"/> <!-- set when drawing LINES -->
     <field name="Front" size="64" start="2:0" type="Rasterizer face"/>
     <field name="Back" size="64" start="4:0" type="Rasterizer face"/>

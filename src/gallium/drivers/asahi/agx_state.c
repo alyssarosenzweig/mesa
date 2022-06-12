@@ -1406,6 +1406,10 @@ demo_rasterizer(struct agx_context *ctx, struct agx_pool *pool, bool is_points)
          ctx->stencil_ref.ref_value[1] :
          cfg.front.stencil_reference;
 
+      /* TODO: This could be optimized */
+      cfg.stencil_test_enable_1 = true;
+      cfg.stencil_test_enable_2 = true;
+
       cfg.front.line_width = cfg.back.line_width = rast->line_width;
       cfg.front.polygon_mode = cfg.back.polygon_mode = AGX_POLYGON_MODE_FILL;
 
