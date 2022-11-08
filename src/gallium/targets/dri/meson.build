@@ -67,6 +67,7 @@ libgallium_dri = shared_library(
 )
 
 foreach d : [[with_gallium_kmsro, [
+               'apple_dri.so',
                'armada-drm_dri.so',
                'exynos_dri.so',
                'hx8357d_dri.so',

@@ -11,15 +11,12 @@
 
 #include <fcntl.h>
 #include <xf86drm.h>
+#include "drm-uapi/asahi_drm.h"
 #include "drm-uapi/dma-buf.h"
 #include "util/log.h"
 #include "util/os_file.h"
 #include "util/os_mman.h"
 #include "util/simple_mtx.h"
-
-/* TODO: Linux UAPI. Dummy defines to get some things to compile. */
-#define ASAHI_BIND_READ  0
-#define ASAHI_BIND_WRITE 0
 
 void
 agx_bo_free(struct agx_device *dev, struct agx_bo *bo)
@@ -64,7 +61,23 @@ static int
 agx_bo_bind(struct agx_device *dev, struct agx_bo *bo, uint64_t addr,
             uint32_t flags)
 {
-   unreachable("Linux UAPI not yet upstream");
+   struct drm_asahi_gem_bind gem_bind = {
+      .op = ASAHI_BIND_OP_BIND,
+      .flags = flags,
+      .handle = bo->handle,
+      .vm_id = dev->vm_id,
+      .offset = 0,
+      .range = bo->size,
+      .addr = addr,
+   };
+
+   int ret = drmIoctl(dev->fd, DRM_IOCTL_ASAHI_GEM_BIND, &gem_bind);
+   if (ret) {
+      fprintf(stderr, "DRM_IOCTL_ASAHI_GEM_BIND failed: %m (handle=%d)\n",
+              bo->handle);
+   }
+
+   return ret;
 }
 
 struct agx_bo *
@@ -78,7 +91,23 @@ agx_bo_alloc(struct agx_device *dev, size_t size, enum agx_bo_flags flags)
    /* executable implies low va */
    assert(!(flags & AGX_BO_EXEC) || (flags & AGX_BO_LOW_VA));
 
-   unreachable("Linux UAPI not yet upstream");
+   struct drm_asahi_gem_create gem_create = {.size = size};
+
+   if (flags & AGX_BO_WRITEBACK)
+      gem_create.flags |= ASAHI_GEM_WRITEBACK;
+
+   if (!(flags & (AGX_BO_SHARED | AGX_BO_SHAREABLE))) {
+      gem_create.flags |= ASAHI_GEM_VM_PRIVATE;
+      gem_create.vm_id = dev->vm_id;
+   }
+
+   int ret = drmIoctl(dev->fd, DRM_IOCTL_ASAHI_GEM_CREATE, &gem_create);
+   if (ret) {
+      fprintf(stderr, "DRM_IOCTL_ASAHI_GEM_CREATE failed: %m\n");
+      return NULL;
+   }
+
+   handle = gem_create.handle;
 
    pthread_mutex_lock(&dev->bo_map_lock);
    bo = agx_lookup_bo(dev, handle);
@@ -89,7 +118,7 @@ agx_bo_alloc(struct agx_device *dev, size_t size, enum agx_bo_flags flags)
    assert(!memcmp(bo, &((struct agx_bo){}), sizeof(*bo)));
 
    bo->type = AGX_ALLOC_REGULAR;
-   bo->size = size; /* TODO: gem_create.size */
+   bo->size = gem_create.size;
    bo->flags = flags;
    bo->dev = dev;
    bo->handle = handle;
@@ -120,7 +149,7 @@ agx_bo_alloc(struct agx_device *dev, size_t size, enum agx_bo_flags flags)
       bind |= ASAHI_BIND_WRITE;
    }
 
-   int ret = agx_bo_bind(dev, bo, bo->ptr.gpu, bind);
+   ret = agx_bo_bind(dev, bo, bo->ptr.gpu, bind);
    if (ret) {
       agx_bo_free(dev, bo);
       return NULL;
@@ -139,7 +168,28 @@ agx_bo_alloc(struct agx_device *dev, size_t size, enum agx_bo_flags flags)
 void
 agx_bo_mmap(struct agx_bo *bo)
 {
-   unreachable("Linux UAPI not yet upstream");
+   struct drm_asahi_gem_mmap_offset gem_mmap_offset = {.handle = bo->handle};
+   int ret;
+
+   if (bo->ptr.cpu)
+      return;
+
+   ret =
+      drmIoctl(bo->dev->fd, DRM_IOCTL_ASAHI_GEM_MMAP_OFFSET, &gem_mmap_offset);
+   if (ret) {
+      fprintf(stderr, "DRM_IOCTL_ASAHI_MMAP_BO failed: %m\n");
+      assert(0);
+   }
+
+   bo->ptr.cpu = os_mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                         bo->dev->fd, gem_mmap_offset.offset);
+   if (bo->ptr.cpu == MAP_FAILED) {
+      bo->ptr.cpu = NULL;
+      fprintf(stderr,
+              "mmap failed: result=%p size=0x%llx fd=%i offset=0x%llx %m\n",
+              bo->ptr.cpu, (long long)bo->size, bo->dev->fd,
+              (long long)gem_mmap_offset.offset);
+   }
 }
 
 struct agx_bo *
@@ -291,17 +341,27 @@ agx_get_global_id(struct agx_device *dev)
 static ssize_t
 agx_get_params(struct agx_device *dev, void *buf, size_t size)
 {
-   /* TODO: Linux UAPI */
-   unreachable("Linux UAPI not yet upstream");
+   struct drm_asahi_get_params get_param = {
+      .param_group = 0,
+      .pointer = (uint64_t)(uintptr_t)buf,
+      .size = size,
+   };
+
+   memset(buf, 0, size);
+
+   int ret = drmIoctl(dev->fd, DRM_IOCTL_ASAHI_GET_PARAMS, &get_param);
+   if (ret) {
+      fprintf(stderr, "DRM_IOCTL_ASAHI_GET_PARAMS failed: %m\n");
+      return -EINVAL;
+   }
+
+   return get_param.size;
 }
 
 bool
 agx_open_device(void *memctx, struct agx_device *dev)
 {
    ssize_t params_size = -1;
-
-   /* TODO: Linux UAPI */
-   return false;
 
    params_size = agx_get_params(dev, &dev->params, sizeof(dev->params));
    if (params_size <= 0) {
@@ -310,8 +370,63 @@ agx_open_device(void *memctx, struct agx_device *dev)
    }
    assert(params_size >= sizeof(dev->params));
 
-   /* TODO: Linux UAPI: Params */
-   unreachable("Linux UAPI not yet upstream");
+   if (dev->params.unstable_uabi_version != DRM_ASAHI_UNSTABLE_UABI_VERSION) {
+      fprintf(stderr, "UABI mismatch: Kernel %d, Mesa %d\n",
+              dev->params.unstable_uabi_version,
+              DRM_ASAHI_UNSTABLE_UABI_VERSION);
+      assert(0);
+      return false;
+   }
+
+   uint64_t incompat =
+      dev->params.feat_incompat & (~AGX_SUPPORTED_INCOMPAT_FEATURES);
+   if (incompat) {
+      fprintf(stderr, "Missing GPU incompat features: 0x%" PRIx64 "\n",
+              incompat);
+      assert(0);
+      return false;
+   }
+
+   if (dev->params.gpu_generation >= 13 && dev->params.gpu_variant != 'P') {
+      const char *variant = " Unknown";
+      switch (dev->params.gpu_variant) {
+      case 'G':
+         variant = "";
+         break;
+      case 'S':
+         variant = " Pro";
+         break;
+      case 'C':
+         variant = " Max";
+         break;
+      case 'D':
+         variant = " Ultra";
+         break;
+      }
+      snprintf(dev->name, sizeof(dev->name), "Apple M%d%s (G%d%c %02X)",
+               dev->params.gpu_generation - 12, variant,
+               dev->params.gpu_generation, dev->params.gpu_variant,
+               dev->params.gpu_revision + 0xA0);
+   } else {
+      // Note: untested, theoretically this is the logic for at least a few
+      // generations back.
+      const char *variant = " Unknown";
+      switch (dev->params.gpu_variant) {
+      case 'P':
+         variant = "";
+         break;
+      case 'G':
+         variant = "X";
+         break;
+      }
+      snprintf(dev->name, sizeof(dev->name), "Apple A%d%s (G%d%c %02X)",
+               dev->params.gpu_generation + 1, variant,
+               dev->params.gpu_generation, dev->params.gpu_variant,
+               dev->params.gpu_revision + 0xA0);
+   }
+
+   dev->guard_size = dev->params.vm_page_size;
+   dev->shader_base = dev->params.vm_shader_start;
 
    util_sparse_array_init(&dev->bo_map, sizeof(struct agx_bo), 512);
    pthread_mutex_init(&dev->bo_map_lock, NULL);
@@ -322,7 +437,14 @@ agx_open_device(void *memctx, struct agx_device *dev)
    for (unsigned i = 0; i < ARRAY_SIZE(dev->bo_cache.buckets); ++i)
       list_inithead(&dev->bo_cache.buckets[i]);
 
-   /* TODO: Linux UAPI: Create VM */
+   struct drm_asahi_vm_create vm_create = {};
+
+   int ret = drmIoctl(dev->fd, DRM_IOCTL_ASAHI_VM_CREATE, &vm_create);
+   if (ret) {
+      fprintf(stderr, "DRM_IOCTL_ASAHI_VM_CREATE failed: %m\n");
+      assert(0);
+      return false;
+   }
 
    simple_mtx_init(&dev->vma_lock, mtx_plain);
    util_vma_heap_init(&dev->main_heap, dev->params.vm_user_start,
@@ -331,7 +453,11 @@ agx_open_device(void *memctx, struct agx_device *dev)
       &dev->usc_heap, dev->params.vm_shader_start,
       dev->params.vm_shader_end - dev->params.vm_shader_start + 1);
 
-   dev->queue_id = agx_create_command_queue(dev, 0 /* TODO: CAPS */);
+   dev->vm_id = vm_create.vm_id;
+
+   dev->queue_id = agx_create_command_queue(
+      dev, DRM_ASAHI_QUEUE_CAP_RENDER | DRM_ASAHI_QUEUE_CAP_BLIT |
+              DRM_ASAHI_QUEUE_CAP_COMPUTE);
    agx_get_global_ids(dev);
 
    return true;
@@ -352,7 +478,20 @@ agx_close_device(struct agx_device *dev)
 uint32_t
 agx_create_command_queue(struct agx_device *dev, uint32_t caps)
 {
-   unreachable("Linux UAPI not yet upstream");
+   struct drm_asahi_queue_create queue_create = {
+      .vm_id = dev->vm_id,
+      .queue_caps = caps,
+      .priority = 1,
+      .flags = 0,
+   };
+
+   int ret = drmIoctl(dev->fd, DRM_IOCTL_ASAHI_QUEUE_CREATE, &queue_create);
+   if (ret) {
+      fprintf(stderr, "DRM_IOCTL_ASAHI_QUEUE_CREATE failed: %m\n");
+      assert(0);
+   }
+
+   return queue_create.queue_id;
 }
 
 int
@@ -362,7 +501,77 @@ agx_submit_single(struct agx_device *dev, enum drm_asahi_cmd_type cmd_type,
                   unsigned out_sync_count, void *cmdbuf, uint32_t result_handle,
                   uint32_t result_off, uint32_t result_size)
 {
-   unreachable("Linux UAPI not yet upstream");
+   size_t cmdbuf_size;
+
+   switch (cmd_type) {
+   case DRM_ASAHI_CMD_RENDER:
+      cmdbuf_size = sizeof(struct drm_asahi_cmd_render);
+      break;
+   case DRM_ASAHI_CMD_BLIT:
+      assert(0);
+      return -ENOTSUP;
+   case DRM_ASAHI_CMD_COMPUTE:
+      cmdbuf_size = sizeof(struct drm_asahi_cmd_compute);
+      break;
+   default:
+      assert(0);
+      return -ENOTSUP;
+   }
+
+   struct drm_asahi_command cmd = {
+      .cmd_type = cmd_type,
+      .flags = 0,
+      .cmd_buffer = (uint64_t)(uintptr_t)cmdbuf,
+      .cmd_buffer_size = cmdbuf_size,
+      .result_offset = result_off,
+      .result_size = result_size,
+      .barriers = {DRM_ASAHI_BARRIER_NONE, DRM_ASAHI_BARRIER_NONE},
+   };
+
+   for (int i = 0; i < DRM_ASAHI_SUBQUEUE_COUNT; i++) {
+      if (barriers & (1 << i)) {
+         cmd.barriers[i] = 0; // Barrier on previous submission
+      }
+   }
+
+   struct drm_asahi_submit submit = {
+      .flags = 0,
+      .queue_id = dev->queue_id,
+      .result_handle = result_handle,
+      .in_sync_count = in_sync_count,
+      .out_sync_count = out_sync_count,
+      .command_count = 1,
+      .in_syncs = (uint64_t)(uintptr_t)in_syncs,
+      .out_syncs = (uint64_t)(uintptr_t)out_syncs,
+      .commands = (uint64_t)(uintptr_t)&cmd,
+   };
+
+   int ret = drmIoctl(dev->fd, DRM_IOCTL_ASAHI_SUBMIT, &submit);
+   if (ret) {
+      switch (cmd_type) {
+      case DRM_ASAHI_CMD_RENDER: {
+         struct drm_asahi_cmd_render *c = cmdbuf;
+         fprintf(
+            stderr,
+            "DRM_IOCTL_ASAHI_SUBMIT render failed: %m (%dx%d tile %dx%d layers %d samples %d)\n",
+            c->fb_width, c->fb_height, c->utile_width, c->utile_height,
+            c->layers, c->samples);
+         assert(0);
+         break;
+      }
+      case DRM_ASAHI_CMD_COMPUTE:
+         fprintf(stderr, "DRM_IOCTL_ASAHI_SUBMIT compute failed: %m\n");
+         assert(0);
+         break;
+      default:
+         assert(0);
+      }
+   }
+
+   if (ret == ENODEV)
+      abort();
+
+   return ret;
 }
 
 int

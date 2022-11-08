@@ -129,13 +129,142 @@ agx_batch_init(struct agx_context *ctx,
       assert(!ret && batch->syncobj);
    }
 
+   batch->result_off = sizeof(union agx_batch_result) * agx_batch_idx(batch);
+   batch->result =
+      (void *)(((uint8_t *)ctx->result_buf->ptr.cpu) + batch->result_off);
+   memset(batch->result, 0, sizeof(union agx_batch_result));
+
    agx_batch_mark_active(batch);
 }
+
+const char *status_str[] = {
+   [DRM_ASAHI_STATUS_PENDING] = "(pending)",
+   [DRM_ASAHI_STATUS_COMPLETE] = "Complete",
+   [DRM_ASAHI_STATUS_UNKNOWN_ERROR] = "UNKNOWN ERROR",
+   [DRM_ASAHI_STATUS_TIMEOUT] = "TIMEOUT",
+   [DRM_ASAHI_STATUS_FAULT] = "FAULT",
+   [DRM_ASAHI_STATUS_KILLED] = "KILLED",
+   [DRM_ASAHI_STATUS_NO_DEVICE] = "NO DEVICE",
+};
+
+const char *fault_type_str[] = {
+   [DRM_ASAHI_FAULT_NONE] = "(none)",
+   [DRM_ASAHI_FAULT_UNKNOWN] = "Unknown",
+   [DRM_ASAHI_FAULT_UNMAPPED] = "Unmapped",
+   [DRM_ASAHI_FAULT_AF_FAULT] = "AF Fault",
+   [DRM_ASAHI_FAULT_WRITE_ONLY] = "Write Only",
+   [DRM_ASAHI_FAULT_READ_ONLY] = "Read Only",
+   [DRM_ASAHI_FAULT_NO_ACCESS] = "No Access",
+};
+
+const char *low_unit_str[16] = {
+   "DCMP", "UL1C", "CMP", "GSL1",    "IAP", "VCE",    "TE",  "RAS",
+   "VDM",  "PPP",  "IPF", "IPF_CPF", "VF",  "VF_CPF", "ZLS", "UNK",
+};
+
+const char *mid_unit_str[16] = {
+   "UNK",     "dPM",      "dCDM_KS0", "dCDM_KS1", "dCDM_KS2", "dIPP",
+   "dIPP_CS", "dVDM_CSD", "dVDM_SSD", "dVDM_ILF", "dVDM_ILD", "dRDE0",
+   "dRDE1",   "FC",       "GSL2",     "UNK",
+};
+
+const char *high_unit_str[16] = {
+   "gPM_SP",         "gVDM_CSD_SP", "gVDM_SSD_SP",    "gVDM_ILF_SP",
+   "gVDM_TFP_SP",    "gVDM_MMB_SP", "gCDM_CS_KS0_SP", "gCDM_CS_KS1_SP",
+   "gCDM_CS_KS2_SP", "gCDM_KS0_SP", "gCDM_KS1_SP",    "gCDM_KS2_SP",
+   "gIPP_SP",        "gIPP_CS_SP",  "gRDE0_SP",       "gRDE1_SP",
+};
 
 static void
 agx_batch_print_stats(struct agx_device *dev, struct agx_batch *batch)
 {
-   unreachable("Linux UAPI not yet upstream");
+   struct drm_asahi_result_info *info;
+
+   if (!batch->result)
+      return;
+
+   if (batch->key.width == AGX_COMPUTE_BATCH_WIDTH)
+      info = &batch->result->compute.info;
+   else
+      info = &batch->result->render.info;
+
+   if (likely(info->status == DRM_ASAHI_STATUS_COMPLETE &&
+              !((dev)->debug & AGX_DBG_STATS)))
+      return;
+
+   unsigned batch_idx = agx_batch_idx(batch);
+
+   if (batch->key.width == AGX_COMPUTE_BATCH_WIDTH) {
+      struct drm_asahi_result_compute *r = &batch->result->compute;
+      float time = (r->ts_end - r->ts_start) / dev->params.timer_frequency_hz;
+
+      mesa_logw(
+         "[Batch %d] Compute %s: %.06f\n", batch_idx,
+         info->status < ARRAY_SIZE(status_str) ? status_str[info->status] : "?",
+         time);
+   } else {
+      struct drm_asahi_result_render *r = &batch->result->render;
+      float time_vtx = (r->vertex_ts_end - r->vertex_ts_start) /
+                       (float)dev->params.timer_frequency_hz;
+      float time_frag = (r->fragment_ts_end - r->fragment_ts_start) /
+                        (float)dev->params.timer_frequency_hz;
+      mesa_logw(
+         "[Batch %d] Render %s: TVB %9ld/%9ld bytes (%d ovf) %c%c%c | vtx %.06f frag %.06f\n",
+         batch_idx,
+         info->status < ARRAY_SIZE(status_str) ? status_str[info->status] : "?",
+         (long)r->tvb_usage_bytes, (long)r->tvb_size_bytes,
+         (int)r->num_tvb_overflows,
+         r->flags & DRM_ASAHI_RESULT_RENDER_TVB_GROW_OVF ? 'G' : ' ',
+         r->flags & DRM_ASAHI_RESULT_RENDER_TVB_GROW_MIN ? 'M' : ' ',
+         r->flags & DRM_ASAHI_RESULT_RENDER_TVB_OVERFLOWED ? 'O' : ' ',
+         time_vtx, time_frag);
+   }
+
+   if (info->fault_type != DRM_ASAHI_FAULT_NONE) {
+      const char *unit_name;
+      int unit_index;
+
+      switch (info->unit) {
+      case 0x00 ... 0x9f:
+         unit_name = low_unit_str[info->unit & 0xf];
+         unit_index = info->unit >> 4;
+         break;
+      case 0xa0 ... 0xaf:
+         unit_name = mid_unit_str[info->unit & 0xf];
+         unit_index = 0;
+         break;
+      case 0xb0 ... 0xb7:
+         unit_name = "GL2CC_META";
+         unit_index = info->unit & 0x7;
+         break;
+      case 0xb8:
+         unit_name = "GL2CC_MB";
+         unit_index = 0;
+         break;
+      case 0xe0 ... 0xff:
+         unit_name = high_unit_str[info->unit & 0xf];
+         unit_index = (info->unit >> 4) & 1;
+         break;
+      default:
+         unit_name = "UNK";
+         unit_index = 0;
+         break;
+      }
+
+      mesa_logw(
+         "[Batch %d] Fault: %s : Addr 0x%llx %c Unit %02x (%s/%d) SB 0x%02x L%d Extra 0x%x\n",
+         batch_idx,
+         info->fault_type < ARRAY_SIZE(fault_type_str)
+            ? fault_type_str[info->fault_type]
+            : "?",
+         (long long)info->address, info->is_read ? 'r' : 'W', info->unit,
+         unit_name, unit_index, info->sideband, info->level, info->extra);
+
+      agx_debug_fault(dev, info->address);
+   }
+
+   assert(info->status == DRM_ASAHI_STATUS_COMPLETE ||
+          info->status == DRM_ASAHI_STATUS_KILLED);
 }
 
 static void
@@ -188,6 +317,9 @@ agx_batch_cleanup(struct agx_context *ctx, struct agx_batch *batch, bool reset)
    if (!(dev->debug & (AGX_DBG_TRACE | AGX_DBG_SYNC))) {
       agx_batch_print_stats(dev, batch);
    }
+
+   util_unreference_framebuffer_state(&batch->key);
+   agx_batch_mark_complete(batch);
 }
 
 int
@@ -634,10 +766,15 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
       assert(!ret);
 
       if (dev->debug & AGX_DBG_TRACE) {
-         /* agxdecode DRM commands */
          switch (cmd_type) {
+         case DRM_ASAHI_CMD_RENDER:
+            agxdecode_drm_cmd_render(&dev->params, cmdbuf, true);
+            break;
+         case DRM_ASAHI_CMD_COMPUTE:
+            agxdecode_drm_cmd_compute(&dev->params, cmdbuf, true);
+            break;
          default:
-            unreachable("Linux UAPI not yet upstream");
+            assert(0);
          }
          agxdecode_next_frame();
       }
@@ -714,6 +851,9 @@ agx_batch_reset(struct agx_context *ctx, struct agx_batch *batch)
 
    if (ctx->batch == batch)
       ctx->batch = NULL;
+
+   /* Elide printing stats */
+   batch->result = NULL;
 
    agx_batch_cleanup(ctx, batch, true);
 }
