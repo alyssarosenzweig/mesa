@@ -33,6 +33,7 @@
 #include "util/u_gen_mipmap.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
+#include "util/u_process.h"
 #include "util/u_screen.h"
 #include "util/u_upload_mgr.h"
 #include "agx_device.h"
@@ -423,6 +424,15 @@ agx_compression_allowed(const struct agx_resource *pres)
    if (agx_device(pres->base.screen)->debug & AGX_DBG_NOCOMPRESS) {
       rsrc_debug(pres, "No compression: disabled\n");
       return false;
+   }
+
+   /* Workaround for https://github.com/supertuxkart/stk-code/issues/4863
+    *
+    * XXX: Fix upstream or at least driconf, this is terrible.
+    */
+   if (strcmp(util_get_process_name(), "supertuxkart") == 0) {
+      if (pres->base.bind & PIPE_BIND_DEPTH_STENCIL)
+         return false;
    }
 
    /* Limited to renderable */
