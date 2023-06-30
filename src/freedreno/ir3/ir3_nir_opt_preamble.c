@@ -255,6 +255,33 @@ avoid_instr(const nir_instr *instr, const void *data)
    return intrin->intrinsic == nir_intrinsic_bindless_resource_ir3;
 }
 
+static bool
+set_speculate(nir_builder *b, nir_instr *instr, UNUSED void *_)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   switch (intr->intrinsic) {
+   /* These instructions go through bounds-checked hardware descriptors so are
+    * always safe to speculate.
+    */
+   case nir_intrinsic_load_ubo:
+   case nir_intrinsic_load_ubo_vec4:
+   case nir_intrinsic_image_load:
+   case nir_intrinsic_image_samples_identical:
+   case nir_intrinsic_bindless_image_load:
+   case nir_intrinsic_load_ssbo:
+   case nir_intrinsic_load_ssbo_ir3:
+      nir_intrinsic_set_access(intr, nir_intrinsic_access(intr) |
+                                     ACCESS_CAN_SPECULATE);
+      return true;
+
+   default:
+      return false;
+   }
+}
+
 bool
 ir3_nir_opt_preamble(nir_shader *nir, struct ir3_shader_variant *v)
 {
@@ -272,6 +299,11 @@ ir3_nir_opt_preamble(nir_shader *nir, struct ir3_shader_variant *v)
    if (max_size == 0)
       return false;
 
+   bool progress =
+      nir_shader_instructions_pass(nir, set_speculate,
+                                   nir_metadata_block_index |
+                                   nir_metadata_dominance, NULL);
+
    nir_opt_preamble_options options = {
       .drawid_uniform = true,
       .subgroup_size_uniform = true,
@@ -283,7 +315,7 @@ ir3_nir_opt_preamble(nir_shader *nir, struct ir3_shader_variant *v)
    };
 
    unsigned size = 0;
-   bool progress = nir_opt_preamble(nir, &options, &size);
+   progress |= nir_opt_preamble(nir, &options, &size);
 
    if (!v->binning_pass)
       const_state->preamble_size = DIV_ROUND_UP(size, 4);
