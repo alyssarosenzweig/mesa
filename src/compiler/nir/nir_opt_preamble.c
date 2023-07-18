@@ -98,6 +98,52 @@ typedef struct {
    const nir_opt_preamble_options *options;
 } opt_preamble_ctx;
 
+static bool
+instr_can_speculate(nir_instr *instr)
+{
+   if (instr->type == nir_instr_type_intrinsic) {
+      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+      return nir_intrinsic_access(intr) & ACCESS_CAN_SPECULATE;
+   } else {
+      return true;
+   }
+}
+
+static bool
+can_speculate(nir_instr *instr, opt_preamble_ctx *ctx)
+{
+   /* If we are only contained within uniform control flow, no speculation is
+    * needed since the control flow will be reconstructed in the preamble.
+    */
+   if (ctx->nonuniform_cf_nesting == 0)
+      return true;
+
+   /* Otherwise we can only hoist if the backend can speculate */
+   return instr_can_speculate(instr);
+}
+
+static bool
+needs_speculate(nir_instr *instr)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_ubo:
+   case nir_intrinsic_load_ubo_vec4:
+   case nir_intrinsic_load_global_constant:
+   case nir_intrinsic_load_constant_agx:
+   case nir_intrinsic_image_load:
+   case nir_intrinsic_image_samples_identical:
+   case nir_intrinsic_bindless_image_load:
+   case nir_intrinsic_load_ssbo:
+      return true;
+   default:
+      return false;
+   }
+}
+
 static float
 get_instr_cost(nir_instr *instr, const nir_opt_preamble_options *options)
 {
@@ -235,6 +281,9 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
 static bool
 can_move_instr(nir_instr *instr, opt_preamble_ctx *ctx)
 {
+   if (needs_speculate(instr) && !can_speculate(instr, ctx))
+      return false;
+
    switch (instr->type) {
    case nir_instr_type_tex: {
       nir_tex_instr *tex = nir_instr_as_tex(instr);
@@ -591,6 +640,62 @@ replace_for_cf_list(nir_builder *b, opt_preamble_ctx *ctx,
    }
 }
 
+/*
+ * If an if-statement contains an instruction that cannot be speculated, the
+ * if-statement must be reconstructed so we avoid the speculation. This applies
+ * even for nested if-statements. Determine which if-statements must be
+ * reconstructed for this reason by walking the program forward and looking
+ * inside uniform if's.
+ *
+ * Returns whether the CF list contains a reconstructed instruction that would
+ * otherwise be speculated, updating the reconstructed_ifs set. This depends on
+ * reconstructed_defs being correctly set by analyze_reconstructed.
+ */
+static bool
+analyze_speculation_for_cf_list(opt_preamble_ctx *ctx, struct exec_list *list)
+{
+   bool reconstruct_cf_list = false;
+
+   foreach_list_typed(nir_cf_node, node, node, list) {
+      switch (node->type) {
+      case nir_cf_node_block: {
+         nir_foreach_instr(instr, nir_cf_node_as_block(node)) {
+            if (needs_speculate(instr) && !instr_can_speculate(instr)) {
+               reconstruct_cf_list = true;
+               break;
+            }
+         }
+
+         break;
+      }
+
+      case nir_cf_node_if: {
+         nir_if *nif = nir_cf_node_as_if(node);
+
+         /* If we can move the if, we might need to reconstruct */
+         if (can_move_src(&nif->condition, ctx)) {
+            bool any = false;
+            any |= analyze_speculation_for_cf_list(ctx, &nif->then_list);
+            any |= analyze_speculation_for_cf_list(ctx, &nif->else_list);
+
+            if (any)
+               _mesa_set_add(ctx->reconstructed_ifs, nif);
+
+            reconstruct_cf_list |= any;
+         }
+
+         break;
+      }
+
+      /* We don't reconstruct loops */
+      default:
+         break;
+      }
+   }
+
+   return reconstruct_cf_list;
+}
+
 static bool
 mark_reconstructed(nir_src *src, void *state)
 {
@@ -839,6 +944,7 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
    ctx.reconstructed_defs = calloc(BITSET_WORDS(impl->ssa_alloc),
                                    sizeof(BITSET_WORD));
    analyze_reconstructed(&ctx, impl);
+   analyze_speculation_for_cf_list(&ctx, &impl->body);
 
    /* Step 5: Actually do the replacement. */
    struct hash_table *remap_table =
