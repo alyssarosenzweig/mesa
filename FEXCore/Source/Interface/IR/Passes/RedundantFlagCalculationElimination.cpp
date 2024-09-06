@@ -112,6 +112,7 @@ private:
   void FoldBranch(IREmitter* IREmit, IRListView& CurrentIR, IROp_CondJump* Op, Ref CodeNode);
   CondClassType X86ToArmFloatCond(CondClassType X86);
   bool ProcessBlock(IREmitter* IREmit, IRListView& CurrentIR, Ref Block, ControlFlowGraph& CFG);
+  void OptimizeParity(IREmitter* IREmit, IRListView& CurrentIR, ControlFlowGraph& CFG);
 };
 
 unsigned DeadFlagCalculationEliminination::FlagForReg(unsigned Reg) {
@@ -580,6 +581,72 @@ bool DeadFlagCalculationEliminination::ProcessBlock(IREmitter* IREmit, IRListVie
   return (OldFlagsRead != FlagsRead);
 }
 
+void DeadFlagCalculationEliminination::OptimizeParity(IREmitter* IREmit, IRListView& CurrentIR, ControlFlowGraph& CFG) {
+  // Mapping for flags inside this pass.
+  const uint8_t PARTIAL = 0;
+  const uint8_t FULL = 1;
+
+  // Initialize conservatively: all blocks need full parity. This initialization
+  // matters for proper handling of backedges.
+  for (auto [Block, BlockHeader] : CurrentIR.GetBlocks()) {
+    CFG.Get(Block)->Flags = FULL;
+  }
+
+  for (auto [Block, BlockHeader] : CurrentIR.GetBlocks()) {
+    bool Full = false;
+    auto Predecessors = CFG.Get(Block)->Predecessors;
+
+    if (Predecessors.empty()) {
+      // Conservatively assume there was full parity before the start block
+      Full = true;
+    } else {
+      // If any predecessor needs full parity at the end, we need full parity.
+      for (auto Pred : Predecessors) {
+        Full |= (CFG.Get(Pred)->Flags == FULL);
+      }
+    }
+
+    for (auto [CodeNode, IROp] : CurrentIR.GetCode(Block)) {
+      if (IROp->Op == OP_STOREREGISTER) {
+        auto Op = IROp->CW<IR::IROp_StoreRegister>();
+        if (Op->Class != GPRClass || Op->Reg != Core::CPUState::PF_AS_GREG) {
+          continue;
+        }
+
+        // Determine if we only write 0/1 to the parity flag.
+        Full = true;
+        auto Generator = CurrentIR.GetOp<IR::IROp_Header>(Op->Value);
+        if (Generator->Op == OP_NZCVSELECT) {
+          auto C0 = CurrentIR.GetOp<IR::IROp_Header>(Generator->Args[0]);
+          auto C1 = CurrentIR.GetOp<IR::IROp_Header>(Generator->Args[1]);
+          if (C0->Op == C1->Op && C0->Op == OP_INLINECONSTANT) {
+            auto IC0 = CurrentIR.GetOp<IR::IROp_InlineConstant>(Generator->Args[0]);
+            auto IC1 = CurrentIR.GetOp<IR::IROp_InlineConstant>(Generator->Args[1]);
+
+            // We need the full 8 if the constant has upper bits set.
+            Full = (IC0->Constant | IC1->Constant) & ~1;
+          }
+        }
+      } else if (IROp->Op == OP_PARITY && !Full) {
+        // Eliminate parity calculations if it's only 1-bit.
+        auto Parity = IROp->C<IROp_Parity>();
+        Ref Value = CurrentIR.GetNode(Parity->Raw);
+
+        if (Parity->Invert) {
+          IREmit->SetWriteCursor(CodeNode);
+          Value = IREmit->_Xor(OpSize::i32Bit, Value, IREmit->_InlineConstant(1));
+        }
+
+        IREmit->ReplaceUsesWithAfter(CodeNode, Value, CurrentIR.at(CodeNode));
+        IREmit->Remove(CodeNode);
+      }
+    }
+
+    // Record our final state for our successors to read.
+    CFG.Get(Block)->Flags = Full ? FULL : PARTIAL;
+  }
+}
+
 void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
   FEXCORE_PROFILE_SCOPED("PassManager::DFE");
 
@@ -641,6 +708,10 @@ void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
         FoldBranch(IREmit, CurrentIR, Op, ExitNode);
       }
     }
+  }
+
+  if (CurrentIR.GetHeader()->ReadsParity) {
+    OptimizeParity(IREmit, CurrentIR, CFG);
   }
 }
 
